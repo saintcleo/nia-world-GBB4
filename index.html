@@ -21,23 +21,23 @@
     background:#0f0f1a;
   }
 
-  /* IMPORTANT: aspect-ratio gives the element intrinsic size */
+  /* Frame always visible (intrinsic size via aspect-ratio) */
   .frame{
     position:relative;
-    aspect-ratio: 9 / 16;                 /* <— keeps it tall/phone-shaped */
+    aspect-ratio: 9 / 16;
     max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 20px);
     max-width: 100vw;
-    width: min(100vw, 56.25vh);           /* reasonable default width */
+    width: min(100vw, 56.25vh);
     background-repeat:no-repeat;
     background-position:center;
     background-size:contain;
   }
 
-  /* Play screen inside the white area of your art */
+  /* Play screen inside the white window of your art */
   .screen {
     position:absolute;
     overflow:hidden;
-    border-radius:24px;
+    border-radius: 36px;  /* tighter to your rounded corners */
   }
   #game { position:absolute; inset:0; width:100%; height:100%; display:block; }
 
@@ -47,7 +47,7 @@
   .pad { border-radius:12px; }
   .btn { border-radius:999px; }
 
-  /* Tiny error overlay so a failure never looks like "just black" */
+  /* Tiny error overlay so failure never looks like "just black" */
   #err { position:fixed; left:12px; bottom:12px; right:12px; color:#fff; background:rgba(220,0,0,.2);
          border:1px solid rgba(220,0,0,.5); padding:10px; border-radius:10px; font:12px/1.4 system-ui; display:none;}
 </style>
@@ -71,29 +71,33 @@
 <div id="err"></div>
 
 <script>
-/* ==== Frame & layout ==== */
+/* ==== Frame & layout (your art + coordinates) ==== */
 const FRAME_URL = "https://i.imgur.com/AAKjA8M_d.webp?maxwidth=760&fidelity=grand";
 
 /* Screen area inside the border (percentages of the whole frame) */
-const SCREEN_RECT = { left:5, top:3.5, width:90, height:72 };
-
-/* Hotspots aligned to your drawing (percentages) */
-const HOTSPOTS = {
-  up:{left:72, top:78, width:12, height:9},
-  down:{left:72, top:90, width:12, height:9},
-  left:{left:65, top:85, width:12, height:9},
-  right:{left:79, top:85, width:12, height:9},
-  A:{left:14, top:86, width:10, height:7},
-  B:{left:27, top:86.5, width:9, height:7},
+const SCREEN_RECT = {
+  left: 6.2,
+  top:  6.6,   // lowered so the canvas sits inside the rounded window
+  width: 87.6,
+  height:69.4
 };
 
-const SPRITE_HEIGHT_FRAC = 0.33;
-const SPRINT_MULTIPLIER  = 1.6;
+/* Hotspots aligned to the drawn D‑pad + A/B (percentages) */
+const HOTSPOTS = {
+  up:    { left: 78.3, top: 81.5, width: 12.0, height: 8.0 },
+  down:  { left: 78.3, top: 92.6, width: 12.0, height: 8.0 },
+  left:  { left: 71.4, top: 87.2, width: 12.0, height: 8.0 },
+  right: { left: 85.0, top: 87.2, width: 12.0, height: 8.0 },
+  A:     { left: 18.0, top: 90.0, width: 11.0, height: 8.0 },
+  B:     { left: 31.0, top: 90.6, width: 10.0, height: 8.0 },
+};
+
+const SPRITE_HEIGHT_FRAC = 0.33;  // how tall Nia is within the screen
+const SPRINT_MULTIPLIER  = 1.6;   // hold A to sprint
 
 const frameEl  = document.getElementById('frame');
 const screenEl = document.getElementById('screen');
 const errEl    = document.getElementById('err');
-
 frameEl.style.backgroundImage = `url("${FRAME_URL}")`;
 
 function applyScreenRect(){
@@ -126,7 +130,6 @@ addEventListener('keydown', e=>{
   keys.add(e.key.toLowerCase());
 });
 addEventListener('keyup', e=>keys.delete(e.key.toLowerCase()));
-
 function press(k, down){ if (down) keys.add(k); else keys.delete(k); }
 function bindHot(el, key){
   const ref = document.getElementById(el);
@@ -168,11 +171,7 @@ const ASSETS = {
   ],
 };
 
-function showError(msg){
-  errEl.textContent = msg;
-  errEl.style.display = 'block';
-  console.error(msg);
-}
+function showError(msg){ errEl.textContent = msg; errEl.style.display = 'block'; console.error(msg); }
 function loadImage(src){
   return new Promise((res, rej)=>{
     const img = new Image();
@@ -212,13 +211,13 @@ new ResizeObserver(resizeCanvas).observe(screenEl);
 
 let G = {
   images:null, worldW:0, worldH:0, camX:0, camY:0,
-  player:{ x:0, y:0, baseSpeed:200, facing:"right", state:"idleRight", frameIndex:0, spriteHeightFrac:0.33 }
+  player:{ x:0, y:0, baseSpeed:200, facing:"right", state:"idleRight", frameIndex:0, spriteHeightFrac:SPRITE_HEIGHT_FRAC }
 };
 
 function keyVec(){
   const up = keys.has("arrowup") || keys.has("w");
   const down = keys.has("arrowdown") || keys.has("s");
-  const left = keys.has("arrowleft") || keys.has("a"); // 'a' on keyboard also left
+  const left = keys.has("arrowleft") || keys.has("a");
   const right= keys.has("arrowright") || keys.has("d");
   let x = (right?1:0) - (left?1:0);
   let y = (down?1:0) - (up?1:0);
@@ -246,7 +245,7 @@ function currentFrame(){
 function update(dt){
   const p = G.player;
   const v = keyVec();
-  const sprinting = keys.has("a"); // A button = sprint
+  const sprinting = keys.has("a"); // A = sprint
   const speed = p.baseSpeed * (sprinting ? SPRINT_MULTIPLIER : 1);
 
   let vx=0, vy=0;
@@ -265,7 +264,7 @@ function update(dt){
   p.x += vx*dt; p.y += vy*dt;
 
   const {img} = currentFrame();
-  const targetH = Math.max(64, Math.min(512, canvas.height * G.player.spriteHeightFrac));
+  const targetH = Math.max(64, Math.min(512, canvas.height * p.spriteHeightFrac));
   const scale = targetH / img.height;
   const halfW = (img.width * scale)/2;
   const halfH = targetH/2;
