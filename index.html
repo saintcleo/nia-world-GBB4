@@ -8,7 +8,7 @@
   html, body { margin:0; height:100%; background:#0f0f1a; }
   * { box-sizing:border-box; }
 
-  /* Root container centers the frame and adds safe-area padding */
+  /* Center the frame and respect iPhone safe-areas */
   .handheld{
     position:fixed; inset:0;
     display:grid; place-items:center;
@@ -17,22 +17,23 @@
       max(8px, env(safe-area-inset-right))
       max(12px, calc(env(safe-area-inset-bottom) + 8px))
       max(8px, env(safe-area-inset-left));
-    background:#0f0f1a;
     touch-action:none;
+    background:#0f0f1a;
   }
 
-  /* Frame always fits inside viewport */
+  /* IMPORTANT: aspect-ratio gives the element intrinsic size */
   .frame{
     position:relative;
+    aspect-ratio: 9 / 16;                 /* <— keeps it tall/phone-shaped */
     max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 20px);
     max-width: 100vw;
-    width: auto;
+    width: min(100vw, 56.25vh);           /* reasonable default width */
     background-repeat:no-repeat;
     background-position:center;
     background-size:contain;
   }
 
-  /* Screen area */
+  /* Play screen inside the white area of your art */
   .screen {
     position:absolute;
     overflow:hidden;
@@ -40,11 +41,15 @@
   }
   #game { position:absolute; inset:0; width:100%; height:100%; display:block; }
 
-  /* Hotspots */
+  /* Hotspots (D‑pad + A/B) */
   .hot { position:absolute; background:transparent; border:none; margin:0; padding:0; }
   .hot:active { outline:2px dashed rgba(255,255,255,.35); outline-offset:2px; border-radius:14px; }
   .pad { border-radius:12px; }
   .btn { border-radius:999px; }
+
+  /* Tiny error overlay so a failure never looks like "just black" */
+  #err { position:fixed; left:12px; bottom:12px; right:12px; color:#fff; background:rgba(220,0,0,.2);
+         border:1px solid rgba(220,0,0,.5); padding:10px; border-radius:10px; font:12px/1.4 system-ui; display:none;}
 </style>
 </head>
 <body>
@@ -52,7 +57,7 @@
   <div id="frame" class="frame">
     <div id="screen" class="screen"><canvas id="game"></canvas></div>
 
-    <!-- D-pad hotspots -->
+    <!-- D‑pad -->
     <button class="hot pad" id="padUp"    aria-label="Up"></button>
     <button class="hot pad" id="padDown"  aria-label="Down"></button>
     <button class="hot pad" id="padLeft"  aria-label="Left"></button>
@@ -63,11 +68,16 @@
     <button class="hot btn" id="btnB" aria-label="B"></button>
   </div>
 </div>
+<div id="err"></div>
 
 <script>
-/* ==== Frame and layout ==== */
+/* ==== Frame & layout ==== */
 const FRAME_URL = "https://i.imgur.com/AAKjA8M_d.webp?maxwidth=760&fidelity=grand";
+
+/* Screen area inside the border (percentages of the whole frame) */
 const SCREEN_RECT = { left:5, top:3.5, width:90, height:72 };
+
+/* Hotspots aligned to your drawing (percentages) */
 const HOTSPOTS = {
   up:{left:72, top:78, width:12, height:9},
   down:{left:72, top:90, width:12, height:9},
@@ -76,118 +86,234 @@ const HOTSPOTS = {
   A:{left:14, top:86, width:10, height:7},
   B:{left:27, top:86.5, width:9, height:7},
 };
-const SPRITE_HEIGHT_FRAC = 0.33;
-const SPRINT_MULTIPLIER = 1.6;
 
-const frameEl=document.getElementById('frame');
-frameEl.style.backgroundImage=`url("${FRAME_URL}")`;
-const screenEl=document.getElementById('screen');
-function applyScreenRect(){const r=SCREEN_RECT;
-  screenEl.style.left=r.left+"%";screenEl.style.top=r.top+"%";
-  screenEl.style.width=r.width+"%";screenEl.style.height=r.height+"%";}
+const SPRITE_HEIGHT_FRAC = 0.33;
+const SPRINT_MULTIPLIER  = 1.6;
+
+const frameEl  = document.getElementById('frame');
+const screenEl = document.getElementById('screen');
+const errEl    = document.getElementById('err');
+
+frameEl.style.backgroundImage = `url("${FRAME_URL}")`;
+
+function applyScreenRect(){
+  const r = SCREEN_RECT;
+  screenEl.style.left   = r.left + "%";
+  screenEl.style.top    = r.top + "%";
+  screenEl.style.width  = r.width + "%";
+  screenEl.style.height = r.height + "%";
+}
 applyScreenRect();
-function placeHot(id,rect){const el=document.getElementById(id);
-  el.style.left=rect.left+"%";el.style.top=rect.top+"%";
-  el.style.width=rect.width+"%";el.style.height=rect.height+"%";}
-for(const [k,v] of Object.entries(HOTSPOTS)) placeHot(k==="A"?"btnA":k==="B"?"btnB":"pad"+k[0].toUpperCase()+k.slice(1),v);
+
+function placeHot(id, rect){
+  const el = document.getElementById(id);
+  el.style.left   = rect.left + "%";
+  el.style.top    = rect.top + "%";
+  el.style.width  = rect.width + "%";
+  el.style.height = rect.height + "%";
+}
+placeHot("padUp",    HOTSPOTS.up);
+placeHot("padDown",  HOTSPOTS.down);
+placeHot("padLeft",  HOTSPOTS.left);
+placeHot("padRight", HOTSPOTS.right);
+placeHot("btnA",     HOTSPOTS.A);
+placeHot("btnB",     HOTSPOTS.B);
 
 /* ==== Input ==== */
-const keys=new Set();
-addEventListener('keydown',e=>{if(["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault();keys.add(e.key.toLowerCase());});
-addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
-function press(k,down){if(down)keys.add(k);else keys.delete(k);}
-function bindHot(el,key){const ref=document.getElementById(el);
-  const dn=ev=>{press(key,true);ev.preventDefault();};
-  const up=ev=>{press(key,false);ev.preventDefault();};
-  ref.addEventListener("pointerdown",dn);
-  ref.addEventListener("pointerup",up);
-  ref.addEventListener("pointercancel",up);
-  ref.addEventListener("pointerleave",up);
-  ref.addEventListener("touchstart",dn,{passive:false});
-  ref.addEventListener("touchend",up,{passive:false});
+const keys = new Set();
+addEventListener('keydown', e=>{
+  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight"," "].includes(e.key)) e.preventDefault();
+  keys.add(e.key.toLowerCase());
+});
+addEventListener('keyup', e=>keys.delete(e.key.toLowerCase()));
+
+function press(k, down){ if (down) keys.add(k); else keys.delete(k); }
+function bindHot(el, key){
+  const ref = document.getElementById(el);
+  const dn = ev=>{ press(key,true);  ev.preventDefault(); };
+  const up = ev=>{ press(key,false); ev.preventDefault(); };
+  ref.addEventListener('pointerdown', dn);
+  ref.addEventListener('pointerup', up);
+  ref.addEventListener('pointercancel', up);
+  ref.addEventListener('pointerleave', up);
+  ref.addEventListener('touchstart', dn, {passive:false});
+  ref.addEventListener('touchend',   up, {passive:false});
 }
-bindHot('padUp','arrowup');bindHot('padDown','arrowdown');
-bindHot('padLeft','arrowleft');bindHot('padRight','arrowright');
-bindHot('btnA','a');bindHot('btnB','b');
+bindHot('padUp','arrowup'); bindHot('padDown','arrowdown');
+bindHot('padLeft','arrowleft'); bindHot('padRight','arrowright');
+bindHot('btnA','a'); bindHot('btnB','b');
 
 /* ==== Assets ==== */
-const ASSETS={
+const ASSETS = {
   background:"https://i.imgur.com/WMZu5E8_d.webp?maxwidth=760&fidelity=grand",
-  idleRight:"https://i.imgur.com/z7GSZUR_d.webp?maxwidth=760&fidelity=grand",
-  idleLeft:"https://i.imgur.com/fd6sQJP_d.webp?maxwidth=760&fidelity=grand",
-  walkRight:[
+  idleRight: "https://i.imgur.com/z7GSZUR_d.webp?maxwidth=760&fidelity=grand",
+  idleLeft:  "https://i.imgur.com/fd6sQJP_d.webp?maxwidth=760&fidelity=grand",
+  walkRight: [
     "https://i.imgur.com/ivFOwq8_d.webp?maxwidth=760&fidelity=grand",
     "https://i.imgur.com/6Uw3fzE_d.webp?maxwidth=760&fidelity=grand",
     "https://i.imgur.com/DwAI1Ow_d.webp?maxwidth=760&fidelity=grand",
   ],
-  walkLeft:[
+  walkLeft: [
     "https://i.imgur.com/cRYm88A_d.webp?maxwidth=760&fidelity=grand",
     "https://i.imgur.com/DyXDOpN_d.webp?maxwidth=760&fidelity=grand",
     "https://i.imgur.com/57dHXQO_d.webp?maxwidth=760&fidelity=grand",
   ],
-  walkUp:[
+  walkUp: [
     "https://i.imgur.com/iYEHNKj_d.webp?maxwidth=760&fidelity=grand",
     "https://i.imgur.com/fBGLCMf_d.webp?maxwidth=760&fidelity=grand",
   ],
-  walkDown:[
+  walkDown: [
     "https://i.imgur.com/M8BxUGr_d.webp?maxwidth=760&fidelity=grand",
     "https://i.imgur.com/SpzHALD_d.webp?maxwidth=760&fidelity=grand",
   ],
 };
-function loadImage(src){return new Promise((res,rej)=>{const i=new Image();i.crossOrigin="anonymous";i.onload=()=>res(i);i.onerror=()=>rej();i.src=src;});}
-async function loadAssets(){const o={walkRight:[],walkLeft:[],walkUp:[],walkDown:[]};
-  o.background=await loadImage(ASSETS.background);
-  o.idleRight=await loadImage(ASSETS.idleRight);
-  o.idleLeft=await loadImage(ASSETS.idleLeft);
-  for(const u of ASSETS.walkRight) o.walkRight.push(await loadImage(u));
-  for(const u of ASSETS.walkLeft) o.walkLeft.push(await loadImage(u));
-  for(const u of ASSETS.walkUp) o.walkUp.push(await loadImage(u));
-  for(const u of ASSETS.walkDown) o.walkDown.push(await loadImage(u));
-  return o;}
+
+function showError(msg){
+  errEl.textContent = msg;
+  errEl.style.display = 'block';
+  console.error(msg);
+}
+function loadImage(src){
+  return new Promise((res, rej)=>{
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = ()=>res(img);
+    img.onerror = ()=>rej(new Error("Failed to load "+src));
+    img.src = src;
+  });
+}
+async function loadAssets(){
+  const out = { walkRight:[], walkLeft:[], walkUp:[], walkDown:[] };
+  out.background = await loadImage(ASSETS.background);
+  out.idleRight  = await loadImage(ASSETS.idleRight);
+  out.idleLeft   = await loadImage(ASSETS.idleLeft);
+  for (const u of ASSETS.walkRight) out.walkRight.push(await loadImage(u));
+  for (const u of ASSETS.walkLeft)  out.walkLeft.push(await loadImage(u));
+  for (const u of ASSETS.walkUp)    out.walkUp.push(await loadImage(u));
+  for (const u of ASSETS.walkDown)  out.walkDown.push(await loadImage(u));
+  return out;
+}
 
 /* ==== Game loop ==== */
-const canvas=document.getElementById('game');const ctx=canvas.getContext('2d');
-function resizeCanvas(){const dpr=devicePixelRatio||1;
-  const w=Math.floor(screenEl.clientWidth),h=Math.floor(screenEl.clientHeight);
-  canvas.style.width=w+"px";canvas.style.height=h+"px";
-  canvas.width=Math.max(1,Math.floor(w*dpr));canvas.height=Math.max(1,Math.floor(h*dpr));
-  ctx.setTransform(dpr,0,0,dpr,0,0);}
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+function resizeCanvas(){
+  const dpr = devicePixelRatio || 1;
+  const w = Math.floor(screenEl.clientWidth);
+  const h = Math.floor(screenEl.clientHeight);
+  canvas.style.width = w+"px";
+  canvas.style.height= h+"px";
+  canvas.width  = Math.max(1, Math.floor(w * dpr));
+  canvas.height = Math.max(1, Math.floor(h * dpr));
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
 new ResizeObserver(resizeCanvas).observe(screenEl);
 
-let G={images:null,worldW:0,worldH:0,camX:0,camY:0,
-  player:{x:0,y:0,baseSpeed:200,facing:"right",state:"idleRight",frameIndex:0,spriteHeightFrac:SPRITE_HEIGHT_FRAC}};
-function keyVec(){const u=keys.has("arrowup")||keys.has("w"),d=keys.has("arrowdown")||keys.has("s"),
-  l=keys.has("arrowleft")||keys.has("a"),r=keys.has("arrowright")||keys.has("d");
-  let x=(r?1:0)-(l?1:0),y=(d?1:0)-(u?1:0);const m=Math.hypot(x,y)||1;
-  return{x:x/m,y:y/m,active:(x||y)};}
-function currentFrame(){const p=G.player,I=G.images;
-  const st={idleRight:[I.idleRight],idleLeft:[I.idleLeft],walkRight:I.walkRight,walkLeft:I.walkLeft,walkUp:I.walkUp,walkDown:I.walkDown};
-  const frames=st[p.state]||[I.idleRight];let idx=0;
-  if(p.state.startsWith("walkRight")||p.state.startsWith("walkLeft")) idx=Math.floor(p.frameIndex)%frames.length;
-  else if(p.state==="walkUp"||p.state==="walkDown"){const seq=[0,1,0,1];idx=seq[Math.floor(p.frameIndex)%seq.length];}
-  return{img:frames[idx],frames};}
-function update(dt){const p=G.player,v=keyVec();const sprinting=keys.has("a");const speed=p.baseSpeed*(sprinting?SPRINT_MULTIPLIER:1);
-  let vx=0,vy=0;if(v.active){vx=v.x*speed;vy=v.y*speed;
-    if(Math.abs(vx)>Math.abs(vy)){p.facing=(vx>=0)?"right":"left";p.state=(vx>=0)?"walkRight":"walkLeft";}
-    else{p.state=(vy>=0)?"walkDown":"walkUp";}}
-  else p.state=(p.facing==="right")?"idleRight":"idleLeft";
-  p.x+=vx*dt;p.y+=vy*dt;
-  const {img}=currentFrame();const targetH=Math.max(64,Math.min(512,canvas.height*p.spriteHeightFrac));
-  const scale=targetH/img.height;const halfW=(img.width*scale)/2,halfH=targetH/2;
-  p.x=Math.max(halfW,Math.min(G.worldW-halfW,p.x));
-  p.y=Math.max(halfH,Math.min(G.worldH-halfH,p.y));
-  p.frameIndex+=(p.state.startsWith("walk")?8:2)*dt;
-  G.camX=Math.max(0,Math.min(G.worldW-canvas.width,p.x-canvas.width/2));
-  G.camY=Math.max(0,Math.min(G.worldH-canvas.height,p.y-canvas.height/2));}
-function draw(){ctx.clearRect(0,0,canvas.width,canvas.height);
-  ctx.drawImage(G.images.background,-G.camX,-G.camY);
-  const p=G.player,{img}=currentFrame();const targetH=Math.max(64,Math.min(512,canvas.height*p.spriteHeightFrac));
-  const scale=targetH/img.height;const drawW=img.width*scale,drawH=img.height*scale;
-  ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality="high";
-  ctx.drawImage(img,Math.round(p.x-G.camX-drawW/2),Math.round(p.y-G.camY-drawH/2),Math.round(drawW),Math.round(drawH));}
-async function start(){G.images=await loadAssets();G.worldW=G.images.background.width;G.worldH=G.images.background.height;
-  G.player.x=G.worldW/2;G.player.y=G.worldH/2;resizeCanvas();
-  let last=performance.now();function loop(now){const dt=Math.min(0.05,(now-last)/1000);last=now;update(dt);draw();requestAnimationFrame(loop);}requestAnimationFrame(loop);}
+let G = {
+  images:null, worldW:0, worldH:0, camX:0, camY:0,
+  player:{ x:0, y:0, baseSpeed:200, facing:"right", state:"idleRight", frameIndex:0, spriteHeightFrac:0.33 }
+};
+
+function keyVec(){
+  const up = keys.has("arrowup") || keys.has("w");
+  const down = keys.has("arrowdown") || keys.has("s");
+  const left = keys.has("arrowleft") || keys.has("a"); // 'a' on keyboard also left
+  const right= keys.has("arrowright") || keys.has("d");
+  let x = (right?1:0) - (left?1:0);
+  let y = (down?1:0) - (up?1:0);
+  const m = Math.hypot(x,y)||1;
+  return {x:x/m, y:y/m, active:(x||y)};
+}
+
+function currentFrame(){
+  const p=G.player, I=G.images;
+  const states = {
+    idleRight:[I.idleRight], idleLeft:[I.idleLeft],
+    walkRight:I.walkRight,   walkLeft:I.walkLeft,
+    walkUp:I.walkUp,         walkDown:I.walkDown
+  };
+  const frames = states[p.state] || [I.idleRight];
+  let idx=0;
+  if (p.state.startsWith("walkRight") || p.state.startsWith("walkLeft")){
+    idx = Math.floor(p.frameIndex) % frames.length;
+  } else if (p.state==="walkUp" || p.state==="walkDown"){
+    const seq=[0,1,0,1]; idx = seq[Math.floor(p.frameIndex)%seq.length];
+  }
+  return {img:frames[idx]};
+}
+
+function update(dt){
+  const p = G.player;
+  const v = keyVec();
+  const sprinting = keys.has("a"); // A button = sprint
+  const speed = p.baseSpeed * (sprinting ? SPRINT_MULTIPLIER : 1);
+
+  let vx=0, vy=0;
+  if (v.active){
+    vx = v.x * speed; vy = v.y * speed;
+    if (Math.abs(vx) > Math.abs(vy)){
+      p.facing = (vx>=0) ? "right" : "left";
+      p.state  = (vx>=0) ? "walkRight" : "walkLeft";
+    } else {
+      p.state  = (vy>=0) ? "walkDown" : "walkUp";
+    }
+  } else {
+    p.state = (p.facing==="right") ? "idleRight" : "idleLeft";
+  }
+
+  p.x += vx*dt; p.y += vy*dt;
+
+  const {img} = currentFrame();
+  const targetH = Math.max(64, Math.min(512, canvas.height * G.player.spriteHeightFrac));
+  const scale = targetH / img.height;
+  const halfW = (img.width * scale)/2;
+  const halfH = targetH/2;
+
+  p.x = Math.max(halfW, Math.min(G.worldW - halfW, p.x));
+  p.y = Math.max(halfH, Math.min(G.worldH - halfH, p.y));
+
+  p.frameIndex += (p.state.startsWith("walk") ? 8 : 2) * dt;
+
+  G.camX = Math.max(0, Math.min(G.worldW - canvas.width,  p.x - canvas.width/2));
+  G.camY = Math.max(0, Math.min(G.worldH - canvas.height, p.y - canvas.height/2));
+}
+
+function draw(){
+  const bg = G.images.background;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(bg, -G.camX, -G.camY);
+
+  const p = G.player;
+  const {img} = currentFrame();
+  const targetH = Math.max(64, Math.min(512, canvas.height * p.spriteHeightFrac));
+  const scale = targetH / img.height;
+  const w = img.width * scale, h = img.height * scale;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, Math.round(p.x - G.camX - w/2), Math.round(p.y - G.camY - h/2), Math.round(w), Math.round(h));
+}
+
+async function start(){
+  try{
+    G.images = await loadAssets();
+  }catch(e){
+    showError(e.message || "Failed to load one or more images.");
+    return;
+  }
+  G.worldW = G.images.background.width;
+  G.worldH = G.images.background.height;
+  G.player.x = G.worldW/2; G.player.y = G.worldH/2;
+  resizeCanvas();
+
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.05, (now-last)/1000); last = now;
+    update(dt); draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+}
 start();
 </script>
 </body>
